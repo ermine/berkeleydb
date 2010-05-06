@@ -1,0 +1,7 @@
+true: debug, warn_A
+"mlbdb_stub.c": include_mlbdb_clib
+"libmlbdb.a": use_mlbdb_clib
+<mlbdb.cm{x,}a>: use_mlbdb_clib, use_libmlbdb
+<test.{byte,native}>: use_mlbdb, use_unix
+<test_trn.{byte,native}>: use_mlbdb, use_unix
+
