@@ -92,39 +92,39 @@ let extern ?cma ?tag_name name =
   with Not_found ->
     add_package name
   
-let make_binding ?include_dir ?lib_dir ~lib ?headers name =
-  flag ["ocamlmklib"; "c"; ("use_" ^ name ^ "_clib")] &
-    (match lib_dir with
-       | None -> S[A lib]
-       | Some dir -> S[A"-ccopt"; A dir; A"-cclib"; A lib]
-    );
-               
+let make_binding ?debug ?include_dir ?lib_dir ~lib ?headers name =
+  flag ["c"; "compile"; "debug"] &
+    S [A"-ccopt"; A"-O0"; A"-ccopt"; A"-ggdb"];
+
   (match include_dir with
      | None -> ()
      | Some dir ->
          flag ["c"; "compile"; ("include_" ^ name ^ "_clib")] &
-           S[A"-ccopt"; A dir; A"-ccopt"; A"-O0"; A"-ccopt"; A"-g"]
+           S[A"-ccopt"; A dir]
   );
+
+  flag ["link"; "library"; "ocaml"; "use_lib" ^ name] &
+    S[A"-cclib"; A"-L."; A"-cclib"; A("-l" ^ name)];
 
   flag ["link"; "ocaml"; "library"; ("use_" ^ name ^ "_clib")] &
     (match lib_dir with
        | None -> S[A"-cclib"; A lib]
-       | Some dir -> S[A"-ccopt"; A dir; A"-cclib"; A lib]
+       | Some dir -> S[A"-cclib"; A("-L" ^ dir);
+                       A"-cclib"; A lib]
     );
-  
+
+  flag ["ocamlmklib"; "c"; ("use_" ^ name ^ "_clib")] &
+    (match lib_dir with
+       | None -> S[A"-cclib"; A lib]
+       | Some dir -> S[A("-L" ^ dir); A lib]
+    );
+
   (* If `static' is true then every ocaml link in bytecode will add -custom *)
-  if true then
+  if false then
     flag ["link"; "ocaml"; "byte"; "use_lib" ^ name] & A"-custom";
 
   ocaml_lib name;
   
-  flag ["link"; "library"; "ocaml"; "byte"; "use_lib" ^ name] &
-    S[A"-dllib"; A("-l" ^ name);
-      A"-ccopt"; A("-L ."); A"-cclib"; A("-l" ^ name)];
-
-  flag ["link"; "library"; "ocaml"; "native"; "use_lib" ^ name] &
-    S[A"-ccopt"; A"-L."; A"-cclib"; A("-l" ^ name)];
-
   dep  ["link"; "ocaml"; ("use_lib" ^ name)] ["lib" ^ name -.- "a"];
   
   (* This will import headers in the build directory. *)
@@ -142,9 +142,10 @@ let nativecode =
 
 let make_deps name =
   if bytecode then
-    name -.- "cma" :: (if nativecode then [name -.- "cmxa"] else [])
+    name -.- "cma" :: (if nativecode then [name -.- "cmxa";
+                                           name -.- "cmxs"] else [])
   else
-    (if nativecode then [name -.- "cmxa"] else [])
+    (if nativecode then [name -.- "cmxa"; name -.- "cmxs"] else [])
 
 let install_lib name ?cma modules =
   let cma =
@@ -153,6 +154,15 @@ let install_lib name ?cma modules =
       | Some v -> v
   in
   let deps = make_deps cma in
+    rule "cmxs"
+      ~prod:"%.cmxs"
+      ~dep:"%.cmxa"
+      (fun env _build ->
+         let cmxa = env "%.cmxa"
+         and cmxs = env "%.cmxs" in
+           Cmd (S[Px"ocamlopt"; A"-shared"; A cmxa; A"-o"; A cmxs])
+      );
+
     rule "Install Library"
       ~prod:"install"
       ~deps

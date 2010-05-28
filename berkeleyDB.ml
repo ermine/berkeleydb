@@ -9,13 +9,20 @@ exception RunRecovery
 exception SecondaryBad
   
 type env
-type db
-type cursor
+type 'a dbt
+type 'a db
+type 'a cursor
 type txn
 type logcursor
 type lsn
 type mpoolfile
 type sequence
+
+type data = string
+
+type keytype =
+  | Recno
+  | String
 
 type dbtype =
   | DB_BTREE
@@ -347,8 +354,7 @@ struct
   external set_encrypt : t -> string -> ?flags:dbenv_encrypt_flag list ->
     unit -> unit
     = "ml_dbenv_set_encrypt"
-  external set_errcall : t ->
-    (t -> string -> string -> unit) option -> unit
+  external set_errcall : t -> (t -> string -> string -> unit) option -> unit
     = "ml_dbenv_set_errcall"
 (*
   external set_errfile : t -> FILE * -> unit
@@ -405,10 +411,10 @@ struct
       external set_msgcall : t -> (t -> string -> unit) -> unit
       external set_msgfile : t -> FILE * -> unit
 *)
-      external set_shm_key : t -> int -> unit
-        = "ml_dbenv_set_shm_key"
-      external set_thread_count : t -> int32 -> unit
-        = "ml_dbenv_set_thread_count"
+  external set_shm_key : t -> int -> unit
+    = "ml_dbenv_set_shm_key"
+  external set_thread_count : t -> int32 -> unit
+    = "ml_dbenv_set_thread_count"
 (*      
       external set_thread_id : t -> (t -> pid_t * -> db_threadid_t * -> unit) ->
         unit
@@ -449,58 +455,82 @@ struct
     = "ml_dbenv_create"
 end
   
+(*
+module DBT =
+struct
+  type 'a t = 'a dbt
+  external create_recno : unit -> int t
+    = "ml_dbt_create_int"
+  external create_string : unit -> string t
+    = "ml_dbt_create_string"
+  external set_data : 'a t -> 'a -> unit
+    = "ml_dbt_set_data"
+  external get_data : 'a t -> 'a
+    = "ml_dbt_get_data"
+  external set_flags : 'a t -> dbt_flag list -> unit
+    = "ml_dbt_set_flags"
+  external close : 'a t -> unit
+    = "ml_dbt_close"
+end
+*)
 
 module DbCursor =
 struct
-  type t = cursor
-  external close : t -> unit -> unit
+  type 'a t = 'a cursor
+  external close : 'a t -> unit -> unit
     = "ml_dbcursor_close"
-  external cmp : t -> t -> int
+  external cmp : 'a t -> 'a t -> int
     = "ml_dbcursor_cmp"
-  external count : t -> int32
+  external count : 'a t -> int32
     = "ml_dbcursor_count"
-  external del : t -> ?flags:dbcursor_del_flag list -> unit -> unit
+  external del : 'a t -> ?flags:dbcursor_del_flag list -> unit -> unit
     = "ml_dbcursor_del"
-  external dup : t -> ?flags:dbcursor_dup_flag list -> unit -> t
+  external dup : 'a t -> ?flags:dbcursor_dup_flag list -> unit -> 'a t
     = "ml_dbcursor_dup"
-  external get : t -> ?key:string -> ?data:string ->
-    ?flags:dbcursor_get_flag list -> unit -> string * string
+  external get : 'a t -> ?key:'a -> ?data:data -> dbcursor_get_flag list ->
+    'a * data
     = "ml_dbcursor_get"
-  external get_priority : t -> db_cache_priority
+  external get_priority : 'a t -> db_cache_priority
     = "ml_dbcursor_get_priority"
-  external pget : t -> ?key:string -> ?data:string ->
-    ?flags:dbcursor_get_flag list -> unit -> string * string
+  external pget : 'a t -> ?key:'a -> ?data:data ->
+    ?flags:dbcursor_get_flag list -> unit -> string * data
     = "ml_dbcursor_pget"
-  external put : t -> string -> string -> ?flags:dbcursor_put_flag list ->
-    unit -> unit
+  external put : 'a t -> ?key:'a -> data -> ?flags:dbcursor_put_flag list ->
+    unit -> 'a
     = "ml_dbcursor_put"
-  external set_priority : t -> db_cache_priority -> unit
+  external set_priority : 'a t -> db_cache_priority -> unit
     = "ml_dbcursor_set_priority"
 end
   
 module Db =
 struct
-  type t = db
+  type 'a t = 'a db
       
-  external associate : t -> ?txn:txn -> t -> (t -> string -> string -> string) ->
+  external associate : 'a t -> ?txn:txn -> 'b t ->
+    ('b t -> 'a -> string -> string) option ->
     ?flags:db_associate_flag list -> unit -> unit
     = "ml_db_associate_byte" "ml_db_associate"
-  external associate_foreign : t -> t ->
-    (t -> string -> string -> string -> int) ->
+  external associate_foreign : 'a t -> 'b t ->
+    ('b t -> 'c -> string -> 'a -> int) option ->
     ?flags:db_associate_foreign_flag list -> unit
     = "ml_db_associate_foreign"
-  external close : t -> ?flags:db_close_flag list -> unit -> unit
+  external close : 'a t -> ?flags:db_close_flag list -> unit -> unit
     = "ml_db_close"
 (*
   external compact : t ->
   txn -> string -> string -> DB_COMPACT * -> int32 -> string -> unit
 *)    
-  external create : ?env:DbEnv.t -> unit -> t
+  external create : ?env:DbEnv.t -> keytype -> 'a t
     = "ml_db_create"
-  external cursor : t -> ?txn:txn -> ?flags:db_cursor_flag list -> unit ->
-    DbCursor.t
+  let create_recno ?env () : int t =
+    create ?env Recno
+  let create_string ?env () : string t =
+    create ?env String
+
+  external cursor : 'a t -> ?txn:txn -> ?flags:db_cursor_flag list -> unit ->
+    'a DbCursor.t
     = "ml_db_cursor"
-  external del : t -> ?txn:txn -> string -> ?flags:db_del_flag list ->
+  external del : 'a t -> ?txn:txn -> string -> ?flags:db_del_flag list ->
     unit -> unit
     = "ml_db_del"
 (*      
@@ -509,171 +539,175 @@ struct
   external errx : t -> string -> unit
     = "ml_db_errx"
 *)        
-  external exists : t -> ?txn:txn -> string -> ?flags:db_exists_flag ->
+  external exists : 'a t -> ?txn:txn -> 'a -> ?flags:db_exists_flag ->
     unit -> bool
     = "ml_db_exists"
-  external fd : t -> Unix.file_descr
+  external fd : 'a t -> Unix.file_descr
     = "ml_db_fd"
-  external get : t -> ?txn:txn -> string -> ?flags:db_get_flag list ->
-    unit -> string
+  external get : 'a t -> ?txn:txn -> 'a ->
+    ?flags:db_get_flag list -> unit -> data
     = "ml_db_get"
-  external get_bt_minkey : t -> int32
+  external get_bt_minkey : 'a t -> int32
     = "ml_db_get_bt_minkey"
-  external get_byteswapped : t -> bool
+  external get_byteswapped : 'a t -> bool
     = "ml_db_get_byteswapped"
-  external get_cachesize : t -> int32 * int32 * int
+  external get_cachesize : 'a t -> int32 * int32 * int
     = "ml_db_get_cachesize"
-  external get_create_dir : t -> string
+  external get_create_dir : 'a t -> string
     = "ml_db_get_create_dir"
-  external get_dbname : t -> string * string
+  external get_dbname : 'a t -> string * string
     = "ml_db_get_dbname"
-  external get_encrypt_flags : t -> ?flags:db_encrypt_flag list -> unit -> unit
+  external get_encrypt_flags : 'a t -> ?flags:db_encrypt_flag list ->
+    unit -> unit
     = "ml_db_get_encrypt_flags"
-  external get_env : t -> DbEnv.t
+  external get_env : 'a t -> DbEnv.t
     = "ml_db_get_env"
 (*
   external get_errfile : t -> FILE ** -> unit
 *)
-  external get_errpfx : t -> string
+  external get_errpfx : 'a t -> string
     = "ml_db_get_errpfx"
-  external get_flags : t -> db_flag list
+  external get_flags : 'a t -> db_flag list
     = "ml_db_get_flags"
-  external get_h_ffactor : t -> int32
+  external get_h_ffactor : 'a t -> int32
     = "ml_db_get_h_ffactor"
-  external get_h_nelem : t -> int32
+  external get_h_nelem : 'a t -> int32
     = "ml_db_get_h_nelem"
-  external get_lorder : t -> int
+  external get_lorder : 'a t -> int
     = "ml_db_get_lorder"
-  external get_mpf : t -> mpoolfile
+  external get_mpf : 'a t -> mpoolfile
     = "ml_db_get_mpf"
 (*    
   external get_msgfile) db -> FILE ** -> unit
 *)
-  external get_multiple : t -> bool
+  external get_multiple : 'a t -> bool
     = "ml_db_get_multiple"
-  external get_open_flags : t -> db_open_flag list
+  external get_open_flags : 'a t -> db_open_flag list
     = "ml_db_get_open_flags"
-  external get_pagesize : t -> int32
+  external get_pagesize : 'a t -> int32
     = "ml_db_get_pagesize"
 (*      
-  external get_partition_dirs : t -> string list
+  external get_partition_dirs : 'a t -> string list
         = "ml_db_get_partition_dirs"
 *)
-  external get_priority : t -> db_cache_priority
+  external get_priority : 'a t -> db_cache_priority
     = "ml_db_get_priority"
-  external get_q_extentsize : t -> int32
+  external get_q_extentsize : 'a t -> int32
     = "ml_db_get_q_extentsize"
-  external get_re_delim : t -> int
+  external get_re_delim : 'a t -> int
     = "ml_db_get_re_delim"
-  external get_re_len : t -> int32
+  external get_re_len : 'a t -> int32
     = "ml_db_get_re_len"
-  external get_re_pad : t -> int
+  external get_re_pad : 'a t -> int
     = "ml_db_get_re_pad"
-  external get_re_source : t -> string
+  external get_re_source : 'a t -> string
     = "ml_db_get_re_source"
-  external get_transactional : t -> bool
+  external get_transactional : 'a t -> bool
     = "ml_db_get_transactional"
-  external get_type : t -> dbtype
+  external get_type : 'a t -> dbtype
     = "ml_db_get_type"
-  external join : t -> DbCursor.t list -> ?flags:db_join_flag list -> unit ->
-    unit
+  external join : 'a t -> ('b DbCursor.t) list -> ?flags:db_join_flag list ->
+    unit -> unit
     = "ml_db_join"
 (*      
-  external key_range : t -> txn -> string -> DB_KEY_RANGE * -> unit
+  external key_range : 'a t -> txn -> string -> DB_KEY_RANGE * -> unit
 *)
-  external db_open : t -> ?txn:txn -> string -> ?database:string ->
+  external db_open : 'a t -> ?txn:txn -> string -> ?database:string ->
     dbtype -> ?flags:db_open_flag list -> ?mode:int -> unit -> unit
     = "ml_db_open_byte" "ml_db_open"
-  external pget : t -> ?txn:txn -> string -> ?flags:db_get_flag list ->
-    unit -> string * string
-    = "ml_db_pget"
-  external put : t -> ?txn:txn -> string -> string ->
-    ?flags:db_put_flag list -> unit -> unit
-    = "ml_db_put_bype" "ml_db_put"
-  external remove : t -> ?database:string -> string -> unit
+  external pget : 'a t -> ?txn:txn -> 'a -> ?data:data ->
+    ?flags:db_get_flag list -> unit -> string * data
+    = "ml_db_pget_byte" "ml_db_pget"
+  external put : 'a t -> ?txn:txn -> 'a -> data ->
+    ?flags:db_put_flag list -> unit -> 'a
+    = "ml_db_put_byte" "ml_db_put"
+  external remove : 'a t -> ?database:string -> string -> unit
     = "ml_db_remove"
-  external rename : t -> string -> ?database:string -> string -> unit
+  external rename : 'a t -> string -> ?database:string -> string -> unit
     = "ml_db_rename"
 (*      
-  external set_append_recno : t -> (t -> string -> int32) -> unit
-  external set_bt_compare : t -> (t -> string -> string -> int) -> unit
-  external set_bt_compress : t ->
+  external set_append_recno : 'a t -> (t -> string -> int32) -> unit
+  external set_bt_compare : 'a t -> (t -> string -> string -> int) -> unit
+  external set_bt_compress : 'a t ->
         (t -> string -> string -> string -> string -> string -> int) ->
         (t -> string -> string -> string -> string -> string -> int) -> unit
 *)        
-  external set_bt_minkey : t -> int32 -> unit
+  external set_bt_minkey : 'a t -> int32 -> unit
     = "ml_db_set_bt_minkey"
 (*      
-  external set_bt_prefix : t -> (t -> string -> string -> int) -> unit
+  external set_bt_prefix : 'a t -> (t -> string -> string -> int) -> unit
 *)        
-  external set_cachesize : t -> int32 -> int32 -> int -> unit
+  external set_cachesize : 'a t -> int32 -> int32 -> int -> unit
     = "ml_db_set_cachesize"
-  external set_create_dir : t -> string -> unit
+  external set_create_dir : 'a t -> string -> unit
     = "ml_db_set_create_dir"
-  external set_dup_compare : t -> (t -> string -> string -> int) -> unit
+  external set_dup_compare : 'a t -> ('a t -> 'a -> 'a -> int) option ->
+    unit -> unit
     = "ml_db_set_dup_compare"
-  external set_encrypt : t -> string -> ?flags:db_encrypt_flag list -> unit ->
+  external set_encrypt : 'a t -> string -> ?flags:db_encrypt_flag list -> unit ->
     unit
     = "ml_db_set_encrypt"
-  external set_errcall : t -> (DbEnv.t -> string -> string -> unit) -> unit
-    = "ml_db_set_errcall"
 (*
-  external set_errfile : t -> FILE * -> unit
+  external set_errcall : 'a t -> (DbEnv.t -> string -> string -> unit) -> unit
+    = "ml_db_set_errcall"
 *)
-  external set_errpfx : t -> string -> unit
+(*
+  external set_errfile : 'a t -> FILE * -> unit
+*)
+  external set_errpfx : 'a t -> string -> unit
     = "ml_db_set_errpfx"
 (*    
-  external set_feedback : t -> (t -> int -> int -> unit) -> unit
+  external set_feedback : 'a t -> (t -> int -> int -> unit) -> unit
 *)
-  external set_flags : t -> db_flag list -> unit
+  external set_flags : 'a t -> db_flag list -> unit
     = "ml_db_set_flags"
 (*
-  external set_h_compare : t -> (t -> string -> string -> int) -> unit
+  external set_h_compare : 'a t -> (t -> string -> string -> int) -> unit
 *)
-  external set_h_ffactor : t -> int32 -> unit
+  external set_h_ffactor : 'a t -> int32 -> unit
     = "ml_db_set_h_ffactor"
 (*      
-  external set_h_hash : t -> (t -> void * -> int32 -> int32) -> unit
+  external set_h_hash : 'a t -> (t -> void * -> int32 -> int32) -> unit
 *)
-  external set_h_nelem : t -> int32 -> unit
+  external set_h_nelem : 'a t -> int32 -> unit
     = "ml_db_set_h_nelem"
-  external set_lorder : t -> int -> unit
+  external set_lorder : 'a t -> int -> unit
     = "ml_db_set_lorder"
 (*    
-  external set_msgcall : t -> (DbEnv.t -> string -> unit) -> unit
-  external set_msgfile : t -> FILE * -> unit
+  external set_msgcall : 'a t -> (DbEnv.t -> string -> unit) -> unit
+  external set_msgfile : 'a t -> FILE * -> unit
 *)
-  external set_pagesize : t -> int32 -> unit
+  external set_pagesize : 'a t -> int32 -> unit
     = "ml_db_set_pagesize"
 (*
-  external set_partition : t ->
+  external set_partition : 'a t ->
   int32 -> string -> int32 ( * )(db -> string key) -> unit
-  external set_partition_dirs : t -> string list -> unit
+  external set_partition_dirs : 'a t -> string list -> unit
 *)
-  external set_priority : t -> db_cache_priority -> unit
+  external set_priority : 'a t -> db_cache_priority -> unit
     = "ml_db_set_priority"
-  external set_q_extentsize : t -> int32 -> unit
+  external set_q_extentsize : 'a t -> int32 -> unit
     = "ml_db_set_q_extentsize"
-  external set_re_delim : t -> int -> unit
+  external set_re_delim : 'a t -> int -> unit
     = "ml_db_set_re_delim"
-  external set_re_len : t -> int32 -> unit
+  external set_re_len : 'a t -> int32 -> unit
     = "ml_db_set_re_len"
-  external set_re_pad : t -> int -> unit
+  external set_re_pad : 'a t -> int -> unit
     = "ml_db_set_re_pad"
-  external set_re_source : t -> string -> unit
+  external set_re_source : 'a t -> string -> unit
     = "ml_db_set_re_source"
-  external stat : t -> ?txn:txn -> ?flags:db_stat_flag list -> unit -> unit
+  external stat : 'a t -> ?txn:txn -> ?flags:db_stat_flag list -> unit -> unit
     = "ml_db_stat"
 (*      
-  external stat_print : t -> db -> flags -> unit
+  external stat_print : 'a t -> db -> flags -> unit
 *)
-  external sync : t -> unit
+  external sync : 'a t -> unit
     = "ml_db_sync"
-  external truncate : t -> ?txn:txn -> unit -> int32
+  external truncate : 'a t -> ?txn:txn -> unit -> int32
     = "ml_db_truncate"
-  external upgrade : t -> string -> ?flags:db_upgrade_flag list -> unit -> unit
+  external upgrade : 'a t -> string -> ?flags:db_upgrade_flag list -> unit -> unit
     = "ml_db_upgrade"
-  external verify : t -> string -> ?database:string -> ?out:Unix.file_descr ->
+  external verify : 'a t -> string -> ?database:string -> ?out:Unix.file_descr ->
     ?flags:db_verify_flag list -> unit -> unit
     = "ml_db_verify_byte" "ml_db_verify"
 end
@@ -777,7 +811,7 @@ struct
 *)
   external get_cachesize : t -> int32
     = "ml_dbsequence_get_cachesize"
-  external get_db : t -> Db.t
+  external get_db : t -> 'a Db.t
     = "ml_dbsequence_get_db"
   external get_flags : t -> dbsequence_flag list
     = "ml_dbsequence_get_flags"
