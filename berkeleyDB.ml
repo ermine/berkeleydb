@@ -18,6 +18,7 @@ type lsn
 type mpoolfile
 type sequence
 
+type recno = int
 type data = string
 
 type keytype =
@@ -459,8 +460,8 @@ end
 module DBT =
 struct
   type 'a t = 'a dbt
-  external create_recno : unit -> int t
-    = "ml_dbt_create_int"
+  external create_recno : unit -> recno t
+    = "ml_dbt_create_recno"
   external create_string : unit -> string t
     = "ml_dbt_create_string"
   external set_data : 'a t -> 'a -> unit
@@ -492,8 +493,8 @@ struct
     = "ml_dbcursor_get"
   external get_priority : 'a t -> db_cache_priority
     = "ml_dbcursor_get_priority"
-  external pget : 'a t -> ?key:'a -> ?data:data ->
-    ?flags:dbcursor_get_flag list -> unit -> string * data
+  external pget : 'a t -> ?key:'a -> ?data:data -> dbcursor_get_flag list ->
+    'b * data
     = "ml_dbcursor_pget"
   external put : 'a t -> ?key:'a -> data -> ?flags:dbcursor_put_flag list ->
     unit -> 'a
@@ -505,11 +506,16 @@ end
 module Db =
 struct
   type 'a t = 'a db
+  type ('a, 'b) secondary = {
+    db : 'a t;
+    primary : 'b t;
+  }
       
   external associate : 'a t -> ?txn:txn -> 'b t ->
-    ('b t -> 'a -> string -> string) option ->
-    ?flags:db_associate_flag list -> unit -> unit
+    ('b t -> 'a -> data -> 'b) option ->
+    ?flags:db_associate_flag list -> unit -> ('b, 'a) secondary
     = "ml_db_associate_byte" "ml_db_associate"
+
   external associate_foreign : 'a t -> 'b t ->
     ('b t -> 'c -> string -> 'a -> int) option ->
     ?flags:db_associate_foreign_flag list -> unit
@@ -522,7 +528,7 @@ struct
 *)    
   external create : ?env:DbEnv.t -> keytype -> 'a t
     = "ml_db_create"
-  let create_recno ?env () : int t =
+  let create_recno ?env () : recno t =
     create ?env Recno
   let create_string ?env () : string t =
     create ?env String
@@ -615,8 +621,11 @@ struct
   external db_open : 'a t -> ?txn:txn -> string -> ?database:string ->
     dbtype -> ?flags:db_open_flag list -> ?mode:int -> unit -> unit
     = "ml_db_open_byte" "ml_db_open"
-  external pget : 'a t -> ?txn:txn -> 'a -> ?data:data ->
-    ?flags:db_get_flag list -> unit -> string * data
+
+  (* A problem: We need to know a type of primary key, so we will pass the
+     primary db *)
+  external pget : ('a, 'b) secondary -> ?txn:txn -> 'a -> ?data:data ->
+    ?flags:db_get_flag list -> unit -> 'b * data
     = "ml_db_pget_byte" "ml_db_pget"
   external put : 'a t -> ?txn:txn -> 'a -> data ->
     ?flags:db_put_flag list -> unit -> 'a
@@ -710,6 +719,7 @@ struct
   external verify : 'a t -> string -> ?database:string -> ?out:Unix.file_descr ->
     ?flags:db_verify_flag list -> unit -> unit
     = "ml_db_verify_byte" "ml_db_verify"
+
 end
 
 module DbTxn =

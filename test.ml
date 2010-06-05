@@ -1,6 +1,6 @@
 let _ = Printexc.record_backtrace true
 
-open Mlbdb
+open BerkeleyDB
 open Db_flags
 
 let _ =
@@ -27,8 +27,10 @@ let rec print_flags = function
 
 let pull_data db =
   for i = 0 to 1000 do
-    Db.put db ("abc" ^ string_of_int i) ("data" ^ string_of_int i)
-      ~flags:[`DB_NOOVERWRITE] ()
+    let key = "abc" ^ string_of_int i in
+    let _key = Db.put db key ("data" ^ string_of_int i)
+      ~flags:[`DB_NOOVERWRITE] () in
+      ()
   done
 
 let get_data db =
@@ -48,8 +50,10 @@ let cursor_data db =
 let cursor_put db =
   let c = Db.cursor db () in
     for i=0 to 10 do
-      DbCursor.put c ("qwe" ^ string_of_int i) ("atat" ^ string_of_int i)
-        ~flags:[`DB_KEYFIRST] ()
+      let _ =
+        DbCursor.put c ~key:("qwe" ^ string_of_int i) ("atat" ^ string_of_int i)
+          ~flags:[`DB_KEYFIRST] () in
+        ()
     done;
     DbCursor.close c ()
 
@@ -65,26 +69,24 @@ let cursor_replace db =
   let key, _ = DbCursor.get c ~key:"abc999" ~flags:[`DB_SET] () in
   let i = DbCursor.count c in
     Printf.printf "Count %ld\n" i;
-    DbCursor.put c key "hello" ~flags:[`DB_CURRENT] ();
-    print_endline "done";
-    DbCursor.close c ()
+    let _ = DbCursor.put c ~key "hello" ~flags:[`DB_CURRENT] () in
+      print_endline "done";
+      DbCursor.close c ()
 
 let test () =
   init ();
   let env = DbEnv.create () in
   let () =
     DbEnv.set_errpfx env "my dbenv prefix";
-    DbEnv.set_errcall env
-      (fun _dbenv prefix msg ->
-         print_endline ("errcall: " ^ prefix ^ " " ^ msg));
+    (*
+      DbEnv.set_errcall env
+      (Some (fun _dbenv prefix msg ->
+               print_endline ("errcall: " ^ prefix ^ " " ^ msg)));
+    *)
     DbEnv.set_verbose env DB_VERB_FILEOPS_ALL true;    
+    print_endline "here";
     DbEnv.env_open env ~home:"/tmp/abc" ~flags:[`DB_CREATE; `DB_INIT_MPOOL] () in
   let db = Db.create ~env () in
-  let () =
-    Db.set_errpfx db "my prefix";
-    Db.set_errcall db (fun _dbenv prefix msg ->
-                         print_endline ("errcall: " ^ prefix ^ " " ^ msg))
-  in
 (*    
   let () = Db.verify db "test.db" ~flags:[`DB_SALVAGE] () in
     print_endline "after verify..";

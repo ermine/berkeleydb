@@ -1,7 +1,10 @@
 true: debug, warn_A
-"mlbdb_stub.c": include_mlbdb_clib
-"libmlbdb.a": use_mlbdb_clib
-<mlbdb.cm{x,}a>: use_mlbdb_clib, use_libmlbdb
-<test.{byte,native}>: use_mlbdb, use_unix
-<test_trn.{byte,native}>: use_mlbdb, use_unix
+"mlbdb_stub.c": include_berkeleyDB_clib
+"libberkeleyDB.a": use_berkeleyDB_clib
+<berkeleyDB.cm{x,}a>: ocamlmklib, linkall, use_berkeleyDB_clib, use_libberkeleyDB
+
+
+<test.{byte,native}>: use_berkeleyDB, use_unix
+<test_recno.{byte,native}>: use_berkeleyDB, use_unix
+<test_trn.{byte,native}>: use_berkeleyDB, use_unix
 

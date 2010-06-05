@@ -12,7 +12,9 @@
 
 #include <db48/db.h>
 #include <string.h>
+#include <errno.h>
 
+#include "db_helper.h"
 #include "db_flags.h"
 
 #define DB_ENV_val(v)         (*((DB_ENV **) Data_custom_val(v)))
@@ -36,14 +38,16 @@
 #define DB_TXN_opt_val(v)  (Is_block(v)) ? DB_TXN_val(Some_val(v)) : NULL
 
 static void finalize_dbenv(value block) {
-  DB_ENV *dbenv = DB_ENV_val(block);
+  //  DB_ENV *dbenv = DB_ENV_val(block);
   printf("finalizing dbenv\n");
+  /*
   if(dbenv != NULL) {
     (void) dbenv->close(dbenv, 0);
     DB_ENV_val(block) = NULL;
   }
   else
     printf("dbenv is NULL\n");
+  */
 }
 
 static struct custom_operations dbenv_ops = {
@@ -56,8 +60,9 @@ static struct custom_operations dbenv_ops = {
 };
 
 static void finalize_db(value block) {
-  DB *db = DB_val(block);
+  // DB *db = DB_val(block);
   printf("finalizing db\n");
+  /*
   if(db != NULL) {
     //? how to check retval
     (void) db->close(db, 0);
@@ -65,6 +70,7 @@ static void finalize_db(value block) {
   }
   else
     printf("db is NULL\n");
+  */
 }
 
 static struct custom_operations db_ops = {
@@ -77,14 +83,16 @@ static struct custom_operations db_ops = {
 };
 
 static void finalize_dbc(value block) {
-  DBC *dbc = DBC_val(block);
+  // DBC *dbc = DBC_val(block);
   printf("finalizing dbc\n");
+  /*
   if(dbc != NULL) {
     (void) dbc->close(dbc);
     DBC_val(block) = NULL;
   }
   else
     printf("dbc is NULL\n");
+  */
 }
 
 static struct custom_operations dbc_ops = {
@@ -106,15 +114,29 @@ static struct custom_operations dbtxn_ops = {
 };
 
 static void finalize_dbmpf(value block) {
-  DB_MPOOLFILE *mpf = DB_MPOOLFILE_val(block);
+  // DB_MPOOLFILE *mpf = DB_MPOOLFILE_val(block);
   printf("finalizing dbmpf\n");
+  /*
   if(mpf != NULL) {
     (void) mpf->close(mpf, 0);
     DB_MPOOLFILE_val(block) = NULL;
   }
   else
     printf("mpf is NULL\n");
+  */
 }
+
+enum OCAML_TYPE_KEY {
+  OCAML_TYPE_KEY_RECNO = 0,
+  OCAML_TYPE_KEY_STRING = 1
+};
+
+struct _app_data {
+  enum OCAML_TYPE_KEY keytype;
+  value vcallbacks;
+};
+
+typedef struct _app_data AppData;
 
 static struct custom_operations dbmpf_ops = {
   "caml_dbmpf",
@@ -139,16 +161,28 @@ enum dbenv_cb_values {
   TOTAL_DBENV_VALUES
 };
 
-static value create_app_data(int size) {
-  CAMLparam0();
-  CAMLlocal1(app_data);
+static void ensure_vcallbacks(AppData *app_data, int size) {
   int i;
 
-  app_data = caml_alloc(size, 0);
-  caml_register_generational_global_root(&app_data);
+  if(app_data->vcallbacks == Val_unit) {
+    app_data->vcallbacks = caml_alloc(size, 0);
+    caml_register_generational_global_root(&(app_data->vcallbacks));
+    for(i = 0; i < size; i++)
+      Store_field(app_data->vcallbacks, i, Val_unit);
+  }
+  return;
+}
+
+static value *create_vcallbacks(int size) {
+  int i;
+  value *app_data = malloc(sizeof(value));
+
+  *(value *) app_data = caml_alloc(size, 0);
+  caml_register_generational_global_root(app_data);
   for(i = 0; i < size; i++)
-    Store_field(app_data, i, Val_unit);
-  CAMLreturn(app_data);
+    Store_field(*(value *) app_data, i, Val_unit);
+  
+  return app_data;
 }
 
 static void check_retval(int ret) {
@@ -164,6 +198,9 @@ static void check_retval(int ret) {
 
   if(ret != 0)
     switch(ret) {
+    case EINVAL:
+      msg = db_strerror(ret);
+      caml_invalid_argument(msg);
     case DB_NOTFOUND: 
       caml_raise_not_found();
     case DB_KEYEMPTY:
@@ -240,16 +277,16 @@ static value Val_flags(int flags, int *tbl) {
 
 #define Size(v)   sizeof(v)/sizeof(*v)
 
-static inline u_int32_t Variant_val(value vflag, u_int32_t tbl[][2], 
-                                    size_t len) {
+static inline u_int32_t Variant_val(value vflag, map_flag tbl[], size_t len) {
   int i;
-  for(i=0; i<len; i++)
-    if(vflag == tbl[i][1])
-      return tbl[i][0];
+  for(i=0; i<len; i++) {
+    if(vflag == tbl[i].variant)
+      return tbl[i].flag;
+  }
   caml_invalid_argument("Bad flag");
 }
 
-static int Variants_val(value vflags, u_int32_t tbl[][2], size_t len) {
+static int Variants_val(value vflags, map_flag tbl[], size_t len) {
   value head;
   u_int32_t flags = 0;
 
@@ -264,16 +301,16 @@ static int Variants_val(value vflags, u_int32_t tbl[][2], size_t len) {
 #define DBFlags_val(vflags, tbl) \
   (Is_block(vflags)) ? Variants_val(Some_val(vflags),tbl, Size(tbl)) : 0
 
-static value Val_variants(value vflags, u_int32_t tbl[][2], size_t len) {
+static value Val_variants(value vflags, map_flag tbl[], size_t len) {
   CAMLparam1(vflags);
   CAMLlocal2(li, cons);
   int i;
 
   li = Val_emptylist;
   for(i = 0; i < len; i++) {
-    if(vflags & tbl[i][0]) {
+    if(vflags & tbl[i].flag) {
       cons = caml_alloc(2, 0);
-      Store_field(cons, 0, tbl[i][1]);
+      Store_field(cons, 0, tbl[i].variant);
       Store_field(cons, 1, li);
       li = cons;
     }
@@ -299,10 +336,42 @@ static value enum2ml(int v, int *tbl, size_t len) {
     caml_invalid_argument("enum2ml");
 }
 
-static int associate_stub(DB *db, 
-                          const DBT *key, const DBT *data, DBT *result) {
+static int associate_recno_stub(DB *db, 
+                                const DBT *key, const DBT *data, DBT *result) {
   CAMLparam0();
   CAMLlocal4(vdb, vkey, vdata, vret);
+  AppData *app_data;
+
+  vdb = caml_alloc_custom(&db_ops, sizeof(DB*), 0, 1);
+  DB_val(vdb) = db;
+  vkey = Val_long(* (db_recno_t *) key->data);
+  vdata = caml_alloc_string(data->size);
+  memcpy(String_val(vdata), data->data, data->size);
+
+  app_data = db->app_private;
+  vret = caml_callback3(Field(app_data->vcallbacks, V_DB_ASSOCIATE), 
+                        vdb, vkey, vdata);
+  memset(result, 0, sizeof(DBT));
+  result->flags = DB_DBT_APPMALLOC;
+  if(((AppData *) db->app_private)->keytype == OCAML_TYPE_KEY_RECNO) {
+    result->data = malloc(sizeof(db_recno_t));
+    *(db_recno_t *) result->data = Long_val(vret);
+    result->size = sizeof(db_recno_t);
+  } else {
+    int len = caml_string_length(vret);
+    result->data = malloc(len);
+    memcpy(result->data, String_val(vret), len);
+    result->size = len;
+  }
+  
+  CAMLreturnT(int, 0);
+}
+
+static int associate_string_stub(DB *db, 
+                                 const DBT *key, const DBT *data, DBT *result) {
+  CAMLparam0();
+  CAMLlocal4(vdb, vkey, vdata, vret);
+  AppData *app_data;
 
   vdb = caml_alloc_custom(&db_ops, sizeof(DB*), 0, 1);
   DB_val(vdb) = db;
@@ -311,13 +380,21 @@ static int associate_stub(DB *db,
   vdata = caml_alloc_string(data->size);
   memcpy(String_val(vdata), data->data, data->size);
 
-  vret = caml_callback3(Field(db->app_private, V_DB_ASSOCIATE), 
+  app_data = db->app_private;
+  vret = caml_callback3(Field(app_data->vcallbacks, V_DB_ASSOCIATE), 
                         vdb, vkey, vdata);
-
   memset(result, 0, sizeof(DBT));
-  result->data = String_val(vret);
-  result->size = caml_string_length(vret);
-  
+  result->flags = DB_DBT_APPMALLOC;
+  if(((AppData *) db->app_private)->keytype == OCAML_TYPE_KEY_RECNO) {
+    result->data = malloc(sizeof(db_recno_t));
+    *(db_recno_t *) result->data = Long_val(vret);
+    result->size = sizeof(db_recno_t);
+  } else {
+    int len = caml_string_length(vret);
+    result->data = malloc(len);
+    memcpy(result->data, String_val(vret), len);
+    result->size = len;
+  }
   CAMLreturnT(int, 0);
 }
 
@@ -335,20 +412,37 @@ static int dbpriority_enum[] = {
 
 CAMLprim value ml_db_associate(value vdb, value vtxn, value vsecondary, 
                                value vcallback, value vflags, value unit) {
+  CAMLparam5(vdb, vtxn, vsecondary, vcallback, vflags);
+  CAMLlocal1(vres);
   DB *db = DB_val(vdb);
   DB *secondary = DB_val(vsecondary);
   DB_TXN *txn = DB_TXN_opt_val(vtxn);
+  int (*callback)(DB *secondary, const DBT *key, const DBT *data, DBT *result);
   u_int32_t flags = DBFlags_val(vflags, flags_db_associate);
+  AppData *app_data;
   int ret;
 
   TEST_HANDLE(db);
   TEST_HANDLE(secondary);
-  if(secondary->app_private == NULL)                                  \
-    secondary->app_private = (void*) create_app_data(TOTAL_DB_VALUES);
-  Store_field(secondary->app_private, V_DB_ASSOCIATE, vcallback);
-  ret =  db->associate(db, txn, secondary, associate_stub, flags);
+  app_data = secondary->app_private;
+  if(Is_block(vcallback)) {
+    ensure_vcallbacks(app_data, TOTAL_DB_VALUES);
+    Store_field(app_data->vcallbacks, V_DB_ASSOCIATE, Some_val(vcallback));
+    if(((AppData *)(db->app_private))->keytype == OCAML_TYPE_KEY_RECNO)
+      callback = associate_recno_stub;
+    else
+      callback = associate_string_stub;
+  } else {
+    if(app_data->vcallbacks != Val_unit)
+      Store_field(app_data->vcallbacks, V_DB_ASSOCIATE, Val_unit);
+    callback = NULL;
+  }
+  ret =  db->associate(db, txn, secondary, callback, flags);
   check_retval(ret);
-  return Val_unit;
+  vres = caml_alloc_tuple(2);
+  Store_field(vres, 0, vsecondary);
+  Store_field(vres, 1, vdb);
+  CAMLreturn(vres);
 }
 
 CAMLprim value ml_db_associate_byte(value *argv, int argn) {
@@ -395,14 +489,16 @@ CAMLprim value ml_db_associate_foreign(value vdb, value vsecondary,
   DB *secondary = DB_val(vsecondary);
   u_int32_t flags = DBFlags_val(vflags, flags_db_associate_foreign);
   int (*callback)(DB *, const DBT *, DBT *, const DBT *, int *) = NULL;
+  AppData *app_data;
   int ret;
 
   TEST_HANDLE(db);
+  TEST_HANDLE(secondary);
+  app_data = secondary->app_private;
   if(Is_block(vcallback)) {
-    if(secondary->app_private == NULL)                                  \
-      secondary->app_private = (void*) create_app_data(TOTAL_DB_VALUES);
+    ensure_vcallbacks(app_data, TOTAL_DB_VALUES);
     callback = &associate_foreign_stub;
-    Store_field(secondary->app_private, V_DB_ASSOCIATE_FOREIGN, 
+    Store_field(app_data->vcallbacks, V_DB_ASSOCIATE_FOREIGN, 
                 Some_val(vcallback));
   }
   ret =  db->associate_foreign(db, secondary, callback, flags);
@@ -429,11 +525,13 @@ static int dup_compare_stub(DB* db, const DBT *dbt1, const DBT *dbt2) {
 
 CAMLprim value ml_db_set_dup_compare(value vdb, value vcallback) {
   DB *db = DB_val(vdb);
+  AppData *app_data;
   int ret;
+
   TEST_HANDLE(db);
-  if(db->app_private == NULL)                                  \
-    db->app_private = (void*) create_app_data(TOTAL_DB_VALUES);
-  Store_field(db->app_private, V_DB_DUP_COMPARE, vcallback);
+  app_data = db->app_private;
+  ensure_vcallbacks(app_data, TOTAL_DB_VALUES);
+  Store_field(app_data->vcallbacks, V_DB_DUP_COMPARE, vcallback);
   ret = db->set_dup_compare(db, dup_compare_stub);
   check_retval(ret);
   return Val_unit;
@@ -443,48 +541,49 @@ static void errcall_stub(const DB_ENV *dbenv,
                          const char *errpfx, const char *msg) {
   CAMLparam0();
   CAMLlocal3(vdbenv, vstr1, vstr2);
-
   vdbenv = caml_alloc_custom(&dbenv_ops, sizeof(DB_ENV*), 0, 1);
   DB_ENV_val(vdbenv) = (DB_ENV*)dbenv;
   vstr1 = caml_copy_string(errpfx);
   vstr2 = caml_copy_string(msg);
 
-  caml_callback3(Field(dbenv->app_private, V_ERRCALL), 
+  caml_callback3(Field(dbenv->app_private, V_ERRCALL),
                  vdbenv, vstr1, vstr2);
-
   CAMLreturn0;
 }
 
 //? Hm, where i should save the callback?
-//  The callback stub does not see DB->app_private
+//  The callback stub does not see DB->app_private because db handle is not
+//  orovided in the callback
+/*
 CAMLprim value ml_db_set_errcall(value vdb, value vcallback) {
   CAMLparam2(vdb, vcallback);
   DB *db = DB_val(vdb);
-  TEST_HANDLE(db);
+  AppData *app_data;
 
-  if(db->app_private == NULL)                                  \
-    db->app_private = (void*) create_app_data(TOTAL_DB_VALUES);
+  TEST_HANDLE(db);
+  app_data = db->app_private;
+  ensure_vcallbacks(app_data, TOTAL_DB_VALUES);
   Store_field(db->app_private, V_ERRCALL, vcallback);
   db->set_errcall(db, &errcall_stub);
   CAMLreturn(Val_unit);
 }
+*/
 
 CAMLprim value ml_dbenv_set_errcall(value vdbenv, value vcallback) {
-  CAMLparam2(vdbenv, vcallback);
   DB_ENV *dbenv = DB_ENV_val(vdbenv);
   void (*callback) (const DB_ENV*, const char*, const char*) = NULL;
   TEST_HANDLE(dbenv);
   if(Is_block(vcallback)) {
-    if(dbenv->app_private == NULL)                                      \
-      dbenv->app_private = (void*) create_app_data(TOTAL_DBENV_VALUES);
-    Store_field(dbenv->app_private, V_ERRCALL, vcallback);
+    if(dbenv->app_private == NULL)
+      dbenv->app_private = create_vcallbacks(TOTAL_DBENV_VALUES);
+    Store_field(dbenv->app_private, V_ERRCALL, Some_val(vcallback));
     callback = errcall_stub;
   } else {
     if(dbenv->app_private != NULL)
       Store_field(dbenv->app_private, V_ERRCALL, Val_unit);
   }
   dbenv->set_errcall(dbenv, callback);
-  CAMLreturn(Val_unit);
+  return Val_unit;
 }
 
 CAMLprim value ml_db_close(value vdb, value vflags, value unit) {
@@ -493,19 +592,22 @@ CAMLprim value ml_db_close(value vdb, value vflags, value unit) {
   int ret;
 
   TEST_HANDLE(db);
-  if(db->app_private != NULL)
+  if(db->app_private != NULL) {
     caml_remove_generational_global_root(db->app_private);
+    free(db->app_private);
+  }
   ret = db->close(db, flags);
   DB_val(vdb) = NULL;
   check_retval(ret);
   return Val_unit;
 }
 
-CAMLprim value ml_db_create(value vdbenv_opt, value unit) {
-  CAMLparam2(vdbenv_opt, unit);
+CAMLprim value ml_db_create(value vdbenv_opt, value vkeytype) {
+  CAMLparam2(vdbenv_opt, vkeytype);
   CAMLlocal1(vres);
   DB *db = NULL;
   DB_ENV *dbenv = NULL;
+  AppData *app_data;
   int ret;
 
   if(Is_block(vdbenv_opt))
@@ -517,6 +619,15 @@ CAMLprim value ml_db_create(value vdbenv_opt, value unit) {
     db = NULL;
   }
   check_retval(ret);
+
+  app_data = (AppData*) malloc(sizeof(AppData));
+  app_data->vcallbacks = Val_unit;
+  switch(Int_val(vkeytype)) {
+  case 0: app_data->keytype = OCAML_TYPE_KEY_RECNO; break;
+  case 1: app_data->keytype = OCAML_TYPE_KEY_STRING; break;
+  default: caml_invalid_argument("Unknown key type");
+  }
+  db->app_private = (void *) app_data;
 
   vres = caml_alloc_custom(&db_ops, sizeof(DB*), 0, 1);
   DB_val(vres) = db;
@@ -612,53 +723,91 @@ CAMLprim value ml_db_get(value vdb, value vtxn, value vkey, value vflags,
   u_int32_t flags = DBFlags_val(vflags, flags_db_get);
   DBT key, data;
   int ret;
+  db_recno_t recno;
 
   TEST_HANDLE(db);
-
   memset(&key, 0, sizeof(DBT));
-  key.data = String_val(vkey);
-  key.size = caml_string_length(vkey);
+  if(Is_long(vkey)) {
+    key.data = &recno;
+    key.size = sizeof(db_recno_t);
+    recno = Long_val(vkey);
+  } else {
+    key.data = String_val(vkey);
+    key.size = caml_string_length(vkey);
+  }
 
   memset(&data, 0, sizeof(DBT));
+  //! DB_THREAD mandates memory allocation flag on data DBT
+  if(DB_IS_THREADED(db))
+    data.flags = DB_DBT_MALLOC;
 
   ret = db->get(db, txn, &key, &data, flags);
   check_retval(ret);
 
   vres = caml_alloc_string(data.size);
   memcpy(String_val(vres), data.data, data.size);
+  if(DB_IS_THREADED(db) && data.flags & DB_DBT_MALLOC &&
+     data.data != NULL)
+    free(data.data);
   CAMLreturn(vres);
 }
 
-CAMLprim value ml_db_pget(value vdb, value vtxn, value vkey, value vflags, 
-                         value unit) {
-  CAMLparam5(vdb, vtxn, vkey, vflags, unit);
+CAMLprim value ml_db_pget(value vsecondary, value vtxn, value vkey, value vdata,
+                          value vflags, value unit) {
+  CAMLparam5(vsecondary, vtxn, vkey, vflags, unit);
   CAMLlocal3(vres, vstr1, vstr2);
-  DB *db = DB_val(vdb);
+  DB *db = DB_val(Field(vsecondary, 0));
+  DB *primary = DB_val(Field(vsecondary, 1));
   DB_TXN *txn = DB_TXN_opt_val(vtxn);
   u_int32_t flags = DBFlags_val(vflags, flags_db_get);
-  DBT key, pkey, pdata;
+  DBT key, pkey, data;
   int ret;
 
   TEST_HANDLE(db);
-
+  TEST_HANDLE(primary);
   memset(&key, 0, sizeof(DBT));
-  key.data = String_val(vkey);
-  key.size = caml_string_length(vkey);
-
+  if(Is_long(vkey)) {
+    u_int32_t i = Long_val(vkey);
+    key.data = &i;
+    key.size = sizeof(u_int32_t);
+  } else {
+    key.data = String_val(vkey);
+    key.size = caml_string_length(vkey);
+  }
   memset(&pkey, 0, sizeof(DBT));
-  memset(&pdata, 0, sizeof(DBT));
+  memset(&data, 0, sizeof(DBT));
+  if(DB_IS_THREADED(primary)) {
+    pkey.flags = DB_DBT_MALLOC;
+    data.flags = DB_DBT_MALLOC;
+  }
+  if(Is_block(vdata)) {
+    data.data = String_val(Some_val(vdata));
+    data.size = caml_string_length(Some_val(vdata));
+  }
 
-  ret = db->pget(db, txn, &key, &pkey, &pdata, flags);
+  ret = db->pget(db, txn, &key, &pkey, &data, flags);
   check_retval(ret);
 
-  vstr1 = caml_alloc_string(pkey.size);
-  memcpy(String_val(vstr1), pkey.data, pkey.size);
-  vstr2 = caml_alloc_string(pdata.size);
-  memcpy(String_val(vstr2), pdata.data, pdata.size);
+  if(((AppData *) primary->app_private)->keytype == OCAML_TYPE_KEY_RECNO)
+    vstr1 = Val_long(*(db_recno_t*) pkey.data);
+  else {
+    vstr1 = caml_alloc_string(pkey.size);
+    memcpy(String_val(vstr1), pkey.data, pkey.size);
+  }
+  vstr2 = caml_alloc_string(data.size);
+  memcpy(String_val(vstr2), data.data, data.size);
   vres = caml_alloc_tuple(2);
   Store_field(vres, 0, vstr1);
   Store_field(vres, 1, vstr2);
+  if(pkey.flags &DB_DBT_MALLOC && pkey.data != NULL)
+    free(pkey.data);
+  if(data.flags &DB_DBT_MALLOC && data.data != NULL)
+    free(data.data);
   CAMLreturn(vres);
+}
+
+CAMLprim value ml_db_pget_byte(value *argv, int argn) {
+  return ml_db_pget(argv[0], argv[1], argv[2], argv[3], argv[4], argv[5]);
 }
 
 CAMLprim value ml_db_join(value vdb, value vcursors, value vflags, value unit) {
@@ -763,30 +912,53 @@ CAMLprim value ml_db_get_type(value vdb) {
 
 CAMLprim value ml_db_put(value vdb, value vtxn, value vkey, value vdata, 
                          value vflags, value unit) {
+  CAMLparam5(vdb, vtxn, vkey, vdata, vflags);
+  CAMLlocal1(vres);
   DB *db = DB_val(vdb);
   DB_TXN *txn = DB_TXN_opt_val(vtxn);
   DBT key, data;
   u_int32_t flags = DBFlags_val(vflags, flags_db_put);
   int ret;
+  db_recno_t recno;
+  void *saved_key_data;
 
   TEST_HANDLE(db);
-
   memset(&key, 0, sizeof(DBT));
+  if(Is_long(vkey)) {
+    key.data = &recno;
+    key.size = sizeof(recno);
+    recno = Long_val(vkey);
+  } else {
+    key.data = String_val(vkey);
+    key.size = caml_string_length(vkey);
+  }
+
+  //! DB_THREAD mandates memory allocation flag on key DBT
+  if(DB_IS_THREADED(db)) {
+    key.flags = DB_DBT_MALLOC;
+    saved_key_data = key.data;
+  }
+
   memset(&data, 0, sizeof(DBT));
-  key.data = String_val(vkey);
-  key.size = caml_string_length(vkey);
   data.data = String_val(vdata);
   data.size = caml_string_length(vdata);
-
   ret = db->put(db, txn, &key, &data, flags);
   check_retval(ret);
-  return Val_unit;
+  if(Is_long(vkey)) {
+    vres = Val_long((*(db_recno_t*)key.data));
+  } else {
+    vres = caml_alloc_string(key.size);
+    memcpy(String_val(vres), key.data, key.size);
+  }
+  if(DB_IS_THREADED(db) && key.flags & DB_DBT_MALLOC && 
+     key.data != saved_key_data)
+    free(key.data);
+  CAMLreturn(vres);
 }
 
 CAMLprim value ml_db_put_byte(value *argv, int argn) {
   return ml_db_put(argv[0], argv[1], argv[2], argv[3], argv[4], argv[5]);
 }
-
 
 CAMLprim value ml_db_remove(value vdb, value vdatabase, value vfile) {
   DB *db = DB_val(vdb);
@@ -989,8 +1161,10 @@ CAMLprim value ml_dbenv_close(value vdbenv, value unit) {
   DB_ENV *dbenv = DB_ENV_val(vdbenv);
   int ret;
   TEST_HANDLE(dbenv);
-  if(dbenv->app_private != NULL)
+  if(dbenv->app_private != NULL) {
     caml_remove_generational_global_root(dbenv->app_private);
+    free(dbenv->app_private);
+  }
   ret = dbenv->close(dbenv, 0);
   DB_ENV_val(vdbenv) = NULL;
   check_retval(ret);
@@ -1059,13 +1233,12 @@ CAMLprim value ml_dbenv_dbrename_byte(value *argv, int argn) {
 CAMLprim value ml_dbenv_open(value vdbenv, value vhome, value vflags,
                              value vmode, value unit) {
   DB_ENV *dbenv = DB_ENV_val(vdbenv);
-  char* db_home = NULL;
+  char *db_home = NULL;
   u_int32_t flags = DBFlags_val(vflags, flags_dbenv_open);
   int mode = 0;
   int ret;
 
   TEST_HANDLE(dbenv);
-
   if(Is_block(vhome))
     db_home = String_val(Some_val(vhome));
 
@@ -1302,19 +1475,29 @@ CAMLprim value ml_dbcursor_dup(value vcursor, value vflags, value unit) {
 }
 
 CAMLprim value ml_dbcursor_get(value vcursor, value vkey, value vdata,
-                               value vflags, value unit) {
-  CAMLparam5(vcursor, vkey, vdata, vflags, unit);
+                               value vflags) {
+  CAMLparam4(vcursor, vkey, vdata, vflags);
   CAMLlocal3(vres, vstr1, vstr2);
   DBC *cursor = DBC_val(vcursor);
   DBT key, data;
-  u_int32_t flags = DBFlags_val(vflags, flags_dbcursor_get);
+  u_int32_t flags = Variants_val(vflags, flags_dbcursor_get, 
+                                Size(flags_dbcursor_get));
   int ret;
+  AppData *app_data;
+  db_recno_t recno;
 
   TEST_HANDLE(cursor);
+  app_data = (AppData *) cursor->dbp->app_private;
   memset(&key, 0, sizeof(DBT));
   if(Is_block(vkey)) {
-    key.data = String_val(Some_val(vkey));
-    key.size = caml_string_length(Some_val(vkey));
+    if(app_data->keytype == OCAML_TYPE_KEY_RECNO && Is_long(Some_val(vkey))) {
+      key.data = &recno;
+      key.size = sizeof(db_recno_t);
+      recno = Long_val(Some_val(vkey));
+    } else {
+      key.data = String_val(Some_val(vkey));
+      key.size = caml_string_length(Some_val(vkey));
+    }
   }
 
   memset(&data, 0, sizeof(DBT));
@@ -1326,8 +1509,12 @@ CAMLprim value ml_dbcursor_get(value vcursor, value vkey, value vdata,
   ret = cursor->get(cursor, &key, &data, flags);
   check_retval(ret);
 
-  vstr1 = caml_alloc_string(key.size);
-  memcpy(String_val(vstr1), key.data, key.size);
+  if(app_data->keytype == OCAML_TYPE_KEY_RECNO)
+    vstr1 = Val_long((*(db_recno_t*)key.data));
+  else {
+    vstr1 = caml_alloc_string(key.size);
+    memcpy(String_val(vstr1), key.data, key.size);
+  }
   vstr2 = caml_alloc_string(data.size);
   memcpy(String_val(vstr2), data.data, data.size);
   vres = caml_alloc_tuple(2);
@@ -1337,12 +1524,14 @@ CAMLprim value ml_dbcursor_get(value vcursor, value vkey, value vdata,
 }
 
 CAMLprim value ml_dbcursor_pget(value vcursor, value vkey, value vdata,
-                                value vflags, value unit) {
-  CAMLparam5(vcursor, vkey, vdata, vflags, unit);
+                                value vflags) {
+  CAMLparam4(vcursor, vkey, vdata, vflags);
   CAMLlocal3(vres, vstr1, vstr2);
   DBC *cursor = DBC_val(vcursor);
+  DB *pdbp;
   DBT key, pkey, data;
-  u_int32_t flags = DBFlags_val(vflags, flags_dbcursor_get);
+  u_int32_t flags = Variants_val(vflags, flags_dbcursor_get, 
+                                 Size(flags_dbcursor_get));
   int ret;
 
   TEST_HANDLE(cursor);
@@ -1361,8 +1550,13 @@ CAMLprim value ml_dbcursor_pget(value vcursor, value vkey, value vdata,
   ret = cursor->pget(cursor, &key, &pkey, &data, flags);
   check_retval(ret);
 
-  vstr1 = caml_alloc_string(pkey.size);
-  memcpy(String_val(vstr1), pkey.data, pkey.size);
+  pdbp = cursor->dbp->s_primary;
+  if(((AppData *) pdbp->app_private)->keytype == OCAML_TYPE_KEY_RECNO)
+    vstr1 = Val_long(*(db_recno_t *) pkey.data);
+  else {
+    vstr1 = caml_alloc_string(pkey.size);
+    memcpy(String_val(vstr1), pkey.data, pkey.size);
+  }
   vstr2 = caml_alloc_string(data.size);
   memcpy(String_val(vstr2), data.data, data.size);
   vres = caml_alloc_tuple(2);
@@ -1373,6 +1567,8 @@ CAMLprim value ml_dbcursor_pget(value vcursor, value vkey, value vdata,
 
 CAMLprim value ml_dbcursor_put(value vcursor, value vkey, value vdata,
                                value vflags, value unit) {
+  CAMLparam5(vcursor, vkey, vdata, vflags, unit);
+  CAMLlocal1(vres);
   DBC *cursor = DBC_val(vcursor);
   DBT key, data;
   u_int32_t flags = DBFlags_val(vflags, flags_dbcursor_put);
@@ -1380,17 +1576,27 @@ CAMLprim value ml_dbcursor_put(value vcursor, value vkey, value vdata,
 
   TEST_HANDLE(cursor);
   memset(&key, 0, sizeof(DBT));
-  key.data = String_val(vkey);
-  key.size = caml_string_length(vkey);
-
+  if(Is_long(vkey)) {
+    u_int32_t i = Long_val(vkey);
+    key.data = &i;
+    key.size = sizeof(u_int32_t);
+  } else {
+    key.data = String_val(vkey);
+    key.size = caml_string_length(vkey);
+  }
   memset(&data, 0, sizeof(DBT));
   data.data = String_val(vdata);
   data.size = caml_string_length(vdata);
 
   ret = cursor->put(cursor, &key, &data, flags);
   check_retval(ret);
-
-  return Val_unit;
+  if(Is_long(vkey))
+    vres = Val_long(key.data);
+  else {
+    vres = caml_alloc_string(key.size);
+    memcpy(String_val(vres), key.data, key.size);
+  }
+  CAMLreturn(vres);
 }
 
 #define Set_flags(module, name, V, tbl)                     \
@@ -1729,7 +1935,8 @@ CAMLprim value ml_dbenv_get_errpfx(value vdbenv) {
 }
 
 CAMLprim value ml_dbenv_set_errpfx(value vdbenv, value vstr) {
-  DB_ENV_val(vdbenv)->set_errpfx(DB_ENV_val(vdbenv), String_val(vstr));
+  DB_ENV *dbenv = DB_ENV_val(vdbenv);
+  dbenv->set_errpfx(dbenv, String_val(vstr));
   return Val_unit;
 }
 
@@ -2096,3 +2303,27 @@ Set_flags(dbsequence, set_flags, DB_SEQ_val, flags_dbsequence)
 Get_flags(dbsequence, get_flags, DB_SEQ_val, flags_dbsequence)
 GetVal(dbsequence, get_cachesize, int32_t, DB_SEQ_val, caml_copy_int32)
 ML2(dbsequence, set_cachesize, DB_SEQ_val, Int32_val)
+
+/*
+CAMLprim value ml_dbt_create_recno(value unit) {
+  CAMLparam0();
+  CAMLlocal1(vres);
+  vres = caml_alloc_custom(dbt_opts, sizeof(DBT*), 0, 1);
+  
+}
+
+CAMLprim value ml_dbt_create_string(value unit) {
+}
+
+CAMLprim value ml_dbt_set_data(value vdbt, value vdata) {
+}
+
+CAMLprim value ml_dbt_get_data(value vdbt, value vdata) {
+}
+
+CAMLpriv value ml_dbt_set_flags(value vdbt, value vflags) {
+}
+
+CAMLprim value ml_dbt_close(value vdbt) {
+}
+*/
