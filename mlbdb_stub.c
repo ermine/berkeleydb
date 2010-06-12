@@ -336,47 +336,37 @@ static value enum2ml(int v, int *tbl, size_t len) {
     caml_invalid_argument("enum2ml");
 }
 
-static int associate_recno_stub(DB *db, 
-                                const DBT *key, const DBT *data, DBT *result) {
-  CAMLparam0();
-  CAMLlocal4(vdb, vkey, vdata, vret);
-  AppData *app_data;
-
-  vdb = caml_alloc_custom(&db_ops, sizeof(DB*), 0, 1);
-  DB_val(vdb) = db;
-  vkey = Val_long(* (db_recno_t *) key->data);
-  vdata = caml_alloc_string(data->size);
-  memcpy(String_val(vdata), data->data, data->size);
-
-  app_data = db->app_private;
-  vret = caml_callback3(Field(app_data->vcallbacks, V_DB_ASSOCIATE), 
-                        vdb, vkey, vdata);
-  memset(result, 0, sizeof(DBT));
-  result->flags = DB_DBT_APPMALLOC;
+static void dbt_of_value(DB *db, DBT *dbt, value v) {
+  dbt->flags = DB_DBT_APPMALLOC;
   if(((AppData *) db->app_private)->keytype == OCAML_TYPE_KEY_RECNO) {
-    result->data = malloc(sizeof(db_recno_t));
-    *(db_recno_t *) result->data = Long_val(vret);
-    result->size = sizeof(db_recno_t);
+    dbt->data = malloc(sizeof(db_recno_t));
+    *(db_recno_t *) dbt->data = Long_val(v);
+    dbt->size = sizeof(db_recno_t);
   } else {
-    int len = caml_string_length(vret);
-    result->data = malloc(len);
-    memcpy(result->data, String_val(vret), len);
-    result->size = len;
+    int len = caml_string_length(v);
+    dbt->data = malloc(len);
+    memcpy(dbt->data, String_val(v), len);
+    dbt->size = len;
   }
-  
-  CAMLreturnT(int, 0);
+  return;
 }
 
-static int associate_string_stub(DB *db, 
-                                 const DBT *key, const DBT *data, DBT *result) {
+static int associate_stub(DB *db, const DBT *key, const DBT *data, DBT *result) {
   CAMLparam0();
-  CAMLlocal4(vdb, vkey, vdata, vret);
+  CAMLlocal5(vdb, vkey, vdata, vret, head);
   AppData *app_data;
+  int rlen;
 
   vdb = caml_alloc_custom(&db_ops, sizeof(DB*), 0, 1);
   DB_val(vdb) = db;
-  vkey = caml_alloc_string(key->size);
-  memcpy(String_val(vkey), key->data, key->size);
+
+  if(((AppData *) db->s_primary->app_private)->keytype == OCAML_TYPE_KEY_RECNO)
+    vkey = Val_long(* (db_recno_t *) key->data);
+  else {
+    vkey = caml_alloc_string(key->size);
+    memcpy(String_val(vkey), key->data, key->size);
+  }
+
   vdata = caml_alloc_string(data->size);
   memcpy(String_val(vdata), data->data, data->size);
 
@@ -384,18 +374,27 @@ static int associate_string_stub(DB *db,
   vret = caml_callback3(Field(app_data->vcallbacks, V_DB_ASSOCIATE), 
                         vdb, vkey, vdata);
   memset(result, 0, sizeof(DBT));
-  result->flags = DB_DBT_APPMALLOC;
-  if(((AppData *) db->app_private)->keytype == OCAML_TYPE_KEY_RECNO) {
-    result->data = malloc(sizeof(db_recno_t));
-    *(db_recno_t *) result->data = Long_val(vret);
-    result->size = sizeof(db_recno_t);
+  for(head = vret, rlen = 0; head != Val_emptylist; 
+      head = Field(head, 1), rlen++);
+  if(rlen == 0)
+    CAMLreturnT(int, DB_DONOTINDEX);
+  else if(rlen == 1) {
+    dbt_of_value(db, result, Field(vret, 0));
+    CAMLreturnT(int, 0);
   } else {
-    int len = caml_string_length(vret);
-    result->data = malloc(len);
-    memcpy(result->data, String_val(vret), len);
-    result->size = len;
+    DBT *dbt;
+
+    result->flags = DB_DBT_MULTIPLE | DB_DBT_APPMALLOC;
+    result->size = rlen;
+    result->data = malloc(sizeof(DBT) * rlen);
+    head = vret;
+
+    for(dbt = result->data; head != Val_emptylist; dbt++) {
+      dbt_of_value(db, dbt, Field(head, 0));
+      head = Field(head, 1);
+    }
+    CAMLreturnT(int, 0);
   }
-  CAMLreturnT(int, 0);
 }
 
 static int dbpriority_enum[] = {
@@ -424,14 +423,12 @@ CAMLprim value ml_db_associate(value vdb, value vtxn, value vsecondary,
 
   TEST_HANDLE(db);
   TEST_HANDLE(secondary);
+
   app_data = secondary->app_private;
   if(Is_block(vcallback)) {
     ensure_vcallbacks(app_data, TOTAL_DB_VALUES);
     Store_field(app_data->vcallbacks, V_DB_ASSOCIATE, Some_val(vcallback));
-    if(((AppData *)(db->app_private))->keytype == OCAML_TYPE_KEY_RECNO)
-      callback = associate_recno_stub;
-    else
-      callback = associate_string_stub;
+    callback = associate_stub;
   } else {
     if(app_data->vcallbacks != Val_unit)
       Store_field(app_data->vcallbacks, V_DB_ASSOCIATE, Val_unit);
@@ -765,6 +762,7 @@ CAMLprim value ml_db_pget(value vsecondary, value vtxn, value vkey, value vdata,
 
   TEST_HANDLE(db);
   TEST_HANDLE(primary);
+
   memset(&key, 0, sizeof(DBT));
   if(Is_long(vkey)) {
     u_int32_t i = Long_val(vkey);
@@ -774,12 +772,15 @@ CAMLprim value ml_db_pget(value vsecondary, value vtxn, value vkey, value vdata,
     key.data = String_val(vkey);
     key.size = caml_string_length(vkey);
   }
+
   memset(&pkey, 0, sizeof(DBT));
   memset(&data, 0, sizeof(DBT));
+
   if(DB_IS_THREADED(primary)) {
     pkey.flags = DB_DBT_MALLOC;
     data.flags = DB_DBT_MALLOC;
   }
+
   if(Is_block(vdata)) {
     data.data = String_val(Some_val(vdata));
     data.size = caml_string_length(Some_val(vdata));
@@ -1487,6 +1488,7 @@ CAMLprim value ml_dbcursor_get(value vcursor, value vkey, value vdata,
   db_recno_t recno;
 
   TEST_HANDLE(cursor);
+
   app_data = (AppData *) cursor->dbp->app_private;
   memset(&key, 0, sizeof(DBT));
   if(Is_block(vkey)) {
@@ -1535,13 +1537,16 @@ CAMLprim value ml_dbcursor_pget(value vcursor, value vkey, value vdata,
   int ret;
 
   TEST_HANDLE(cursor);
+
   memset(&key, 0, sizeof(DBT));
   if(Is_block(vkey)) {
     key.data = String_val(Some_val(vkey));
     key.size = caml_string_length(Some_val(vkey));
   }
 
+  memset(&pkey, 0, sizeof(DBT));
   memset(&data, 0, sizeof(DBT));
+
   if(Is_block(vdata)) {
     data.data = String_val(Some_val(vdata));
     data.size = caml_string_length(Some_val(vdata));

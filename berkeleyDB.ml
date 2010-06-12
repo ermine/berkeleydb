@@ -512,7 +512,7 @@ struct
   }
       
   external associate : 'a t -> ?txn:txn -> 'b t ->
-    ('b t -> 'a -> data -> 'b) option ->
+    ('b t -> 'a -> data -> 'b list) option ->
     ?flags:db_associate_flag list -> unit -> ('b, 'a) secondary
     = "ml_db_associate_byte" "ml_db_associate"
 
