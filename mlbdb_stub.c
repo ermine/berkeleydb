@@ -10,7 +10,7 @@
 #include <caml/signals.h>
 #include <caml/callback.h>
 
-#include <db48/db.h>
+#include <db.h>
 #include <string.h>
 #include <errno.h>
 
@@ -1538,10 +1538,17 @@ CAMLprim value ml_dbcursor_pget(value vcursor, value vkey, value vdata,
 
   TEST_HANDLE(cursor);
 
+  pdbp = cursor->dbp->s_primary;
+
   memset(&key, 0, sizeof(DBT));
   if(Is_block(vkey)) {
-    key.data = String_val(Some_val(vkey));
-    key.size = caml_string_length(Some_val(vkey));
+    if(Is_long(Some_val(vkey))) {
+      key.data = (db_recno_t *) Long_val(Some_val(vkey));
+      key.size = sizeof(db_recno_t);
+    } else {
+      key.data = String_val(Some_val(vkey));
+      key.size = caml_string_length(Some_val(vkey));
+    }
   }
 
   memset(&pkey, 0, sizeof(DBT));
@@ -1555,7 +1562,6 @@ CAMLprim value ml_dbcursor_pget(value vcursor, value vkey, value vdata,
   ret = cursor->pget(cursor, &key, &pkey, &data, flags);
   check_retval(ret);
 
-  pdbp = cursor->dbp->s_primary;
   if(((AppData *) pdbp->app_private)->keytype == OCAML_TYPE_KEY_RECNO)
     vstr1 = Val_long(*(db_recno_t *) pkey.data);
   else {
@@ -1789,7 +1795,7 @@ static int rep_config_enum[] = {
   DB_REP_CONF_DELAYCLIENT,
   DB_REP_CONF_INMEM,
   DB_REP_CONF_LEASE,
-  DB_REP_CONF_NOAUTOINIT,
+  /* 4.8  DB_REP_CONF_NOAUTOINIT, */
   DB_REP_CONF_NOWAIT,
   DB_REPMGR_CONF_2SITE_STRICT
 
